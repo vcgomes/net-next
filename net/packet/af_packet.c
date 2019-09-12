@@ -2449,6 +2449,32 @@ static int packet_snd_vnet_parse(struct msghdr *msg, size_t *len,
 	return __packet_snd_vnet_parse(vnet_hdr, *len);
 }
 
+static u64 tpacket_get_tstamp(void *frame, const struct packet_sock *po,
+			      const struct sockcm_cookie *sockc)
+{
+	union tpacket_uhdr h;
+	u64 txtime = sockc->transmit_time;
+
+	if (txtime || !sock_flag(&po->sk, SO_TXTIME))
+		return txtime;
+
+	h.raw = frame;
+
+	switch (po->tp_version) {
+	case TPACKET_V1:
+		return h.h1->tp_sec * NSEC_PER_SEC +
+			h.h1->tp_usec * NSEC_PER_USEC;
+	case TPACKET_V2:
+		return h.h2->tp_sec * NSEC_PER_SEC + h.h2->tp_nsec;
+	case TPACKET_V3:
+		return h.h3->tp_sec * NSEC_PER_SEC + h.h3->tp_nsec;
+	default:
+		WARN(1, "TPACKET version not supported\n");
+		BUG();
+		return 0;
+	}
+}
+
 static int tpacket_fill_skb(struct packet_sock *po, struct sk_buff *skb,
 		void *frame, struct net_device *dev, void *data, int tp_len,
 		__be16 proto, unsigned char *addr, int hlen, int copylen,
@@ -2466,7 +2492,7 @@ static int tpacket_fill_skb(struct packet_sock *po, struct sk_buff *skb,
 	skb->dev = dev;
 	skb->priority = po->sk.sk_priority;
 	skb->mark = po->sk.sk_mark;
-	skb->tstamp = sockc->transmit_time;
+	skb->tstamp = tpacket_get_tstamp(frame, po, sockc);
 	skb_setup_tx_timestamp(skb, sockc->tsflags);
 	skb_zcopy_set_nouarg(skb, ph.raw);
 
