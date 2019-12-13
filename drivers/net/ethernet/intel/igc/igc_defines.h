@@ -374,6 +374,10 @@
 #define I225_TXPBSIZE_DEFAULT	0x04000014 /* TXPBSIZE default */
 #define IGC_RXPBS_CFG_TS_EN	0x80000000 /* Timestamp in Rx buffer */
 
+#define IGC_TXPBSIZE_TSN	0x04145145 /* Each queue will have 5k bytes buffer */
+
+#define IGC_DTXMXPKTSZ_TSN	0x19 /* 1600 bytes of Maximum TX DMA packet size (64B resolution) */
+
 /* Time Sync Interrupt Causes */
 #define IGC_TSICR_SYS_WRAP	BIT(0) /* SYSTIM Wrap around. */
 #define IGC_TSICR_TXTS		BIT(1) /* Transmit Timestamp. */
@@ -427,6 +431,22 @@
 #define IGC_TSYNCTXCTL_SYNC_COMP		0x40000000  /* sync complete */
 #define IGC_TSYNCTXCTL_START_SYNC		0x80000000  /* initiate sync */
 #define IGC_TSYNCTXCTL_TXSYNSIG			0x00000020  /* Sample TX tstamp in PHY sop */
+
+/* Transmit Scheduling */
+#define IGC_TQAVCTRL_TRANSMIT_MODE_TSN	0x00000001
+#define IGC_TQAVCTRL_ENHANCED_QAV	0x00000008
+
+#define IGC_TXQCTL_QUEUE_MODE_LAUNCHT	0x00000001
+#define IGC_TXQCTL_STRICT_CYCLE		0x00000002
+#define IGC_TXQCTL_STRICT_END		0x00000004
+#define IGC_TXQCTL_PREEMPTIBLE		0x00000008
+
+#define IGC_BASET_L_AUTO_SET		0x40000000
+#define IGC_BASET_L_COPY_H		0x80000000
+
+#define IGC_QBVCYCLET_S_PLUS1		0x80000000
+
+#define IGC_TSAUXC_DISABLE_SYSTIME_0	BIT(31)
 
 /* Receive Checksum Control */
 #define IGC_RXCSUM_CRCOFL	0x00000800   /* CRC32 offload enable */
