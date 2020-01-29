@@ -1776,6 +1776,11 @@ ice_parse_caps(struct ice_hw *hw, void *buf, u32 cap_count,
 				  "%s: msix_vector_first_id = %d\n", prefix,
 				  caps->msix_vector_first_id);
 			break;
+		case ICE_AQC_CAPS_IWARP:
+			caps->iwarp = (number == 1);
+			ice_debug(hw, ICE_DBG_INIT,
+				  "%s: iwarp = %d\n", prefix, caps->iwarp);
+			break;
 		case ICE_AQC_CAPS_MAX_MTU:
 			caps->max_mtu = number;
 			ice_debug(hw, ICE_DBG_INIT, "%s: max_mtu = %d\n",
@@ -1799,6 +1804,16 @@ ice_parse_caps(struct ice_hw *hw, void *buf, u32 cap_count,
 		ice_debug(hw, ICE_DBG_INIT,
 			  "%s: maxtc = %d (based on #ports)\n", prefix,
 			  caps->maxtc);
+		if (caps->iwarp) {
+			ice_debug(hw, ICE_DBG_INIT, "%s: forcing RDMA off\n",
+				  prefix);
+			caps->iwarp = 0;
+		}
+
+		/* print message only when processing device capabilities */
+		if (dev_p)
+			dev_info(ice_hw_to_dev(hw),
+				 "RDMA functionality is not available with the current device configuration.\n");
 	}
 }
 
