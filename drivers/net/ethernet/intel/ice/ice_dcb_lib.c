@@ -170,6 +170,56 @@ ice_peer_prep_tc_change(struct ice_peer_dev_int *peer_dev_int,
 }
 
 /**
+ * ice_dcb_bwchk - check if ETS bandwidth input parameters are correct
+ * @dcbcfg: pointer to DCB config structure
+ */
+int ice_dcb_bwchk(struct ice_dcbx_cfg *dcbcfg)
+{
+	struct ice_dcb_ets_cfg *etscfg = &dcbcfg->etscfg;
+	u8 num_tc, total_bw = 0;
+	int i;
+
+	/* returns number of contigous TCs and 1 TC for non-contigous TCs,
+	 * since at least 1 TC has to be configured
+	 */
+	num_tc = ice_dcb_get_num_tc(dcbcfg);
+
+	/* no bandwidth checks required if there's only one TC and assign
+	 * all bandwidth to it i.e. to TC0 and return
+	 */
+	if (num_tc == 1) {
+		etscfg->tcbwtable[0] = ICE_TC_MAX_BW;
+		return 0;
+	}
+	/* There are few rules with which TC bandwidth can be applied for any TC
+	 * with a UP mapped to it.
+	 *	1. All TCs have zero BW - Valid
+	 *	   ex:  tcbw=0,0,0
+	 *	2. First few non-zero and rest zero BW - Valid
+	 *	   ex:  tcbw=100,0,0
+	 *	3. Zero BW in between 2 non-zero BW TCs - Invalid
+	 *	   ex:  tcbw=25,0,75
+	 */
+	for (i = 0; i < num_tc; i++) {
+		/* don't allow zero BW for TCs other than TC0 */
+		if (i && !etscfg->tcbwtable[i])
+			goto err;
+
+		if (etscfg->tsatable[i] == ICE_IEEE_TSA_ETS)
+			total_bw += etscfg->tcbwtable[i];
+	}
+
+	 /* total bandwidth should be equal to 100 */
+	if (total_bw != ICE_TC_MAX_BW)
+		goto err;
+
+	return 0;
+
+err:
+	return -EINVAL;
+}
+
+/**
  * ice_pf_dcb_cfg - Apply new DCB configuration
  * @pf: pointer to the PF struct
  * @new_cfg: DCBX config to apply
@@ -205,6 +255,11 @@ int ice_pf_dcb_cfg(struct ice_pf *pf, struct ice_dcbx_cfg *new_cfg, bool locked)
 
 	/* Notify capable peers about impending change to TCs */
 	ice_for_each_peer(pf, NULL, ice_peer_prep_tc_change);
+
+	if (ice_dcb_bwchk(new_cfg)) {
+		dev_err(dev, "Invalid config, not applying DCB\n");
+		return -EINVAL;
+	}
 
 	/* Store old config in case FW config fails */
 	old_cfg = kmemdup(curr_cfg, sizeof(*old_cfg), GFP_KERNEL);
