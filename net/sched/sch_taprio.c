@@ -423,15 +423,27 @@ static int taprio_enqueue(struct sk_buff *skb, struct Qdisc *sch,
 	if (unlikely(!child))
 		return qdisc_drop(skb, sch, to_free);
 
+	if (!TXTIME_ASSIST_IS_ENABLED(q->flags))
+	    goto done;
+
+	/* We are in the txtime mode, and the application has the
+	 * TXTIME of a packet, we need to verify that it fits the
+	 * intervals.
+	 */
 	if (skb->sk && sock_flag(skb->sk, SOCK_TXTIME)) {
 		if (!is_valid_interval(skb, sch))
 			return qdisc_drop(skb, sch, to_free);
-	} else if (TXTIME_ASSIST_IS_ENABLED(q->flags)) {
-		skb->tstamp = get_packet_txtime(skb, sch);
-		if (!skb->tstamp)
-			return qdisc_drop(skb, sch, to_free);
+		goto done;
 	}
 
+	/* The application hasn't set the TXTIME of a packet, find the
+	 * earliest time that it can be sent.
+	 */
+	skb->tstamp = get_packet_txtime(skb, sch);
+	if (!skb->tstamp)
+		return qdisc_drop(skb, sch, to_free);
+
+done:
 	qdisc_qstats_backlog_inc(sch, skb);
 	sch->q.qlen++;
 
