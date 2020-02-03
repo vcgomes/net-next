@@ -870,6 +870,7 @@ static int igc_write_mc_addr_list(struct net_device *netdev)
 
 static __le32 igc_tx_launchtime(struct igc_adapter *adapter, ktime_t txtime)
 {
+	struct igc_hw *hw = &adapter->hw;
 	ktime_t cycle_time = adapter->cycle_time;
 	ktime_t base_time = adapter->base_time;
 	u32 launchtime;
@@ -881,6 +882,9 @@ static __le32 igc_tx_launchtime(struct igc_adapter *adapter, ktime_t txtime)
 	 * descriptor field may be misinterpreted.
 	 */
 	div_s64_rem(ktime_sub_ns(txtime, base_time), cycle_time, &launchtime);
+
+	hw_dbg("txtime %lld base %lld cycle %lld launchtime %d\n",
+	       txtime, base_time, cycle_time, launchtime);
 
 	return cpu_to_le32(launchtime);
 }
