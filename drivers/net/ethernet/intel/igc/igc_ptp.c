@@ -22,11 +22,6 @@ static void igc_ptp_read_i225(struct igc_adapter *adapter,
 	struct igc_hw *hw = &adapter->hw;
 	u32 sec, nsec;
 
-	/* The timestamp latches on lowest register read. For I210/I211, the
-	 * lowest register is SYSTIMR. Since we only need to provide nanosecond
-	 * resolution, we can ignore it.
-	 */
-	rd32(IGC_SYSTIMR);
 	nsec = rd32(IGC_SYSTIML);
 	sec = rd32(IGC_SYSTIMH);
 
