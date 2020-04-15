@@ -4713,11 +4713,25 @@ static bool is_base_time_past(ktime_t base_time, const struct timespec64 *now)
 	return timespec64_compare(now, &b) > 0;
 }
 
+static u32 guard_band(struct igc_adapter *adapter)
+{
+	switch (adapter->link_speed) {
+	case SPEED_1000:
+		return 1600;
+	case SPEED_2500:
+		return 640;
+	}
+
+	/* No need for a guard band in lower speeds. */
+	return 0;
+}
+
 static bool validate_schedule(struct igc_adapter *adapter,
 			      const struct tc_taprio_qopt_offload *qopt)
 {
 	int queue_uses[IGC_MAX_TX_QUEUES] = { };
 	struct timespec64 now;
+	u32 guard;
 	size_t n;
 
 	if (qopt->cycle_time_extension)
@@ -4733,11 +4747,16 @@ static bool validate_schedule(struct igc_adapter *adapter,
 	if (!is_base_time_past(qopt->base_time, &now))
 		return false;
 
+	guard = guard_band(adapter);
+
 	for (n = 0; n < qopt->num_entries; n++) {
 		const struct tc_taprio_sched_entry *e;
 		int i;
 
 		e = &qopt->entries[n];
+
+		if (e->interval <= guard)
+			return false;
 
 		/* i225 only supports "global" frame preemption
 		 * settings.
@@ -4777,6 +4796,7 @@ static int igc_save_qbv_schedule(struct igc_adapter *adapter,
 				 struct tc_taprio_qopt_offload *qopt)
 {
 	u32 start_time = 0, end_time = 0;
+	u32 guard;
 	size_t n;
 
 	if (!qopt->enable) {
@@ -4789,6 +4809,8 @@ static int igc_save_qbv_schedule(struct igc_adapter *adapter,
 
 	if (!validate_schedule(adapter, qopt))
 		return -EINVAL;
+
+	guard = guard_band(adapter);
 
 	adapter->cycle_time = qopt->cycle_time;
 	adapter->base_time = qopt->base_time;
@@ -4809,7 +4831,7 @@ static int igc_save_qbv_schedule(struct igc_adapter *adapter,
 				continue;
 
 			ring->start_time = start_time;
-			ring->end_time = end_time;
+			ring->end_time = end_time - guard;
 		}
 
 		start_time += e->interval;
