@@ -961,8 +961,12 @@ static int igb_set_ringparam(struct net_device *netdev,
 			memcpy(&temp_ring[i], adapter->rx_ring[i],
 			       sizeof(struct igb_ring));
 
+			/* Clear copied XDP RX-queue info */
+			memset(&temp_ring[i].xdp_rxq, 0,
+			       sizeof(temp_ring[i].xdp_rxq));
+
 			temp_ring[i].count = new_rx_count;
-			err = igb_setup_rx_resources(&temp_ring[i]);
+			err = igb_setup_rx_resources(&temp_ring[i], adapter);
 			if (err) {
 				while (i) {
 					i--;
@@ -1577,7 +1581,7 @@ static int igb_setup_desc_rings(struct igb_adapter *adapter)
 	rx_ring->netdev = adapter->netdev;
 	rx_ring->reg_idx = adapter->vfs_allocated_count;
 
-	if (igb_setup_rx_resources(rx_ring)) {
+	if (igb_setup_rx_resources(rx_ring, adapter)) {
 		ret_val = 3;
 		goto err_nomem;
 	}
