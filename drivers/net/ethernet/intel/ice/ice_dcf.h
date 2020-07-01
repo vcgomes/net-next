@@ -21,9 +21,41 @@ enum ice_dcf_state {
 	ICE_DCF_STATE_PAUSE,
 };
 
+struct ice_dcf_sw_rule_entry;
+
+#define ICE_HW_VSI_ID_MAX	BIT(10) /* The AQ VSI number uses 10 bits */
+
+struct ice_dcf_vsi_list_info {
+	struct list_head list_entry;
+	struct ice_dcf_sw_rule_entry *sw_rule;
+	u16 list_id;
+
+	u16 vsi_count;
+	DECLARE_BITMAP(hw_vsi_map, ICE_HW_VSI_ID_MAX);
+};
+
+struct ice_dcf_sw_rule_entry {
+	struct list_head list_entry;
+	u16 rule_id;
+
+	/* Only support ICE_FWD_TO_VSI and ICE_FWD_TO_VSI_LIST */
+	enum ice_sw_fwd_act_type fltr_act;
+	/* Depending on filter action */
+	union {
+		u16 hw_vsi_id:10;
+		u16 vsi_list_id:10;
+	} fwd_id;
+
+	struct ice_dcf_vsi_list_info *vsi_list_info;
+};
+
 struct ice_dcf {
 	struct ice_vf *vf;
 	enum ice_dcf_state state;
+
+	/* Trace the switch rules added/removed by DCF */
+	struct list_head sw_rule_head;
+	struct list_head vsi_list_info_head;
 
 	/* Handle the AdminQ command between the DCF (Device Config Function)
 	 * and the firmware.
@@ -46,5 +78,14 @@ bool ice_check_dcf_allowed(struct ice_vf *vf);
 bool ice_is_vf_dcf(struct ice_vf *vf);
 enum ice_dcf_state ice_dcf_get_state(struct ice_pf *pf);
 void ice_dcf_set_state(struct ice_pf *pf, enum ice_dcf_state state);
+void ice_dcf_init_sw_rule_mgmt(struct ice_pf *pf);
+void ice_rm_all_dcf_sw_rules(struct ice_pf *pf);
+void ice_rm_dcf_sw_vsi_rule(struct ice_pf *pf, u16 hw_vsi_id);
+bool
+ice_dcf_pre_aq_send_cmd(struct ice_vf *vf, struct ice_aq_desc *aq_desc,
+			u8 *aq_buf, u16 aq_buf_size);
+enum virtchnl_status_code
+ice_dcf_post_aq_send_cmd(struct ice_pf *pf, struct ice_aq_desc *aq_desc,
+			 u8 *aq_buf);
 #endif /* CONFIG_PCI_IOV */
 #endif /* _ICE_DCF_H_ */

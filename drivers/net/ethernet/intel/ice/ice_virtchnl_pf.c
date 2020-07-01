@@ -361,6 +361,7 @@ void ice_free_vfs(struct ice_pf *pf)
 		dev_warn(dev, "VFs are assigned - not disabling SR-IOV\n");
 
 	if (ice_dcf_get_state(pf) != ICE_DCF_STATE_OFF) {
+		ice_rm_all_dcf_sw_rules(pf);
 		ice_dcf_set_state(pf, ICE_DCF_STATE_OFF);
 		pf->dcf.vf = NULL;
 	}
@@ -1055,6 +1056,9 @@ static void ice_vf_clear_counters(struct ice_vf *vf)
  */
 static void ice_vf_pre_vsi_rebuild(struct ice_vf *vf)
 {
+	/* Remove switch rules associated with the reset VF */
+	ice_rm_dcf_sw_vsi_rule(vf->pf, vf->lan_vsi_num);
+
 	ice_vf_clear_counters(vf);
 	ice_clear_vf_reset_trigger(vf);
 }
@@ -1584,6 +1588,8 @@ static int ice_ena_vfs(struct ice_pf *pf, u16 num_vfs)
 	if (ret)
 		goto err_pci_disable_sriov;
 
+	ice_dcf_init_sw_rule_mgmt(pf);
+
 	if (ice_set_per_vf_res(pf)) {
 		dev_err(dev, "Not enough resources for %d VFs, try with fewer number of VFs\n",
 			num_vfs);
@@ -2013,6 +2019,13 @@ static int ice_vc_get_vf_res_msg(struct ice_vf *vf, u8 *msg)
 			 ICE_DCF_VFID);
 	} else if (ice_is_vf_dcf(vf) &&
 		   ice_dcf_get_state(pf) != ICE_DCF_STATE_OFF) {
+		/* If a designated DCF requests AVF functionality from the
+		 * same VF without the DCF gracefully relinquishing the DCF
+		 * functionality first, remove ALL switch filters that were
+		 * added by the DCF.
+		 */
+		dev_info(ice_pf_to_dev(pf), "DCF is not in the OFF state, removing all switch filters that were added by the DCF\n");
+		ice_rm_all_dcf_sw_rules(pf);
 		ice_dcf_set_state(pf, ICE_DCF_STATE_OFF);
 		pf->dcf.vf = NULL;
 		ice_reset_vf(vf, false);
@@ -3723,6 +3736,18 @@ ice_dcf_handle_aq_cmd(struct ice_vf *vf, struct ice_aq_desc *aq_desc,
 	if ((aq_buf && !aq_buf_size) || (!aq_buf && aq_buf_size))
 		return -EINVAL;
 
+	if (ice_dcf_pre_aq_send_cmd(vf, aq_desc, aq_buf, aq_buf_size)) {
+		ret = ice_vc_send_msg_to_vf(vf, VIRTCHNL_OP_DCF_CMD_DESC,
+					    VIRTCHNL_STATUS_SUCCESS,
+					    (u8 *)aq_desc, sizeof(*aq_desc));
+		if (ret || !aq_buf_size)
+			return ret;
+
+		v_op = VIRTCHNL_OP_DCF_CMD_BUFF;
+		v_ret = VIRTCHNL_STATUS_SUCCESS;
+		goto err;
+	}
+
 	aq_ret = ice_aq_send_cmd(&pf->hw, aq_desc, aq_buf, aq_buf_size, NULL);
 	/* It needs to send back the AQ response message if ICE_ERR_AQ_ERROR
 	 * returns, some AdminQ handlers will use the error code filled by FW
@@ -3732,6 +3757,14 @@ ice_dcf_handle_aq_cmd(struct ice_vf *vf, struct ice_aq_desc *aq_desc,
 		v_ret = VIRTCHNL_STATUS_ERR_ADMIN_QUEUE_ERROR;
 		v_op = VIRTCHNL_OP_DCF_CMD_DESC;
 		goto err;
+	}
+
+	if (aq_ret != ICE_ERR_AQ_ERROR) {
+		v_ret = ice_dcf_post_aq_send_cmd(pf, aq_desc, aq_buf);
+		if (v_ret != VIRTCHNL_STATUS_SUCCESS) {
+			v_op = VIRTCHNL_OP_DCF_CMD_DESC;
+			goto err;
+		}
 	}
 
 	ret = ice_vc_send_msg_to_vf(vf, VIRTCHNL_OP_DCF_CMD_DESC, v_ret,
@@ -3840,6 +3873,7 @@ static int ice_vc_dis_dcf_cap(struct ice_vf *vf)
 
 	if (vf->driver_caps & VIRTCHNL_VF_CAP_DCF) {
 		vf->driver_caps &= ~VIRTCHNL_VF_CAP_DCF;
+		ice_rm_all_dcf_sw_rules(vf->pf);
 		ice_dcf_set_state(vf->pf, ICE_DCF_STATE_OFF);
 		vf->pf->dcf.vf = NULL;
 	}
@@ -4256,8 +4290,14 @@ int ice_set_vf_trust(struct net_device *netdev, int vf_id, bool trusted)
 	if (trusted == vf->trusted)
 		return 0;
 
+	/* If the trust mode of a given DCF is taken away without the DCF
+	 * gracefully relinquishing the DCF functionality, remove ALL switch
+	 * filters that were added by the DCF and treat this VF as any other
+	 * untrusted AVF.
+	 */
 	if (ice_is_vf_dcf(vf) && !trusted &&
 	    ice_dcf_get_state(pf) != ICE_DCF_STATE_OFF) {
+		ice_rm_all_dcf_sw_rules(pf);
 		ice_dcf_set_state(pf, ICE_DCF_STATE_OFF);
 		pf->dcf.vf = NULL;
 		vf->driver_caps &= ~VIRTCHNL_VF_CAP_DCF;

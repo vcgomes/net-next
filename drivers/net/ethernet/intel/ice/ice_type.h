@@ -707,6 +707,15 @@ struct ice_hw_port_stats {
 	u64 fd_sb_match;
 };
 
+enum ice_sw_fwd_act_type {
+	ICE_FWD_TO_VSI = 0,
+	ICE_FWD_TO_VSI_LIST, /* Do not use this when adding filter */
+	ICE_FWD_TO_Q,
+	ICE_FWD_TO_QGRP,
+	ICE_DROP_PACKET,
+	ICE_INVAL_ACT
+};
+
 /* Checksum and Shadow RAM pointers */
 #define ICE_SR_BOOT_CFG_PTR		0x132
 #define ICE_NVM_OROM_VER_OFF		0x02
