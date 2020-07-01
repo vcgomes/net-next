@@ -360,6 +360,11 @@ void ice_free_vfs(struct ice_pf *pf)
 	else
 		dev_warn(dev, "VFs are assigned - not disabling SR-IOV\n");
 
+	if (ice_dcf_get_state(pf) != ICE_DCF_STATE_OFF) {
+		ice_dcf_set_state(pf, ICE_DCF_STATE_OFF);
+		pf->dcf.vf = NULL;
+	}
+
 	/* Avoid wait time by stopping all VFs at the same time */
 	ice_for_each_vf(pf, i)
 		if (test_bit(ICE_VF_STATE_QS_ENA, pf->vf[i].vf_states))
@@ -1285,6 +1290,9 @@ bool ice_reset_vf(struct ice_vf *vf, bool is_vflr)
 	set_bit(ICE_VF_STATE_DIS, vf->vf_states);
 	ice_trigger_vf_reset(vf, is_vflr, false);
 
+	if (ice_dcf_get_state(pf) == ICE_DCF_STATE_ON)
+		ice_dcf_set_state(pf, ICE_DCF_STATE_BUSY);
+
 	vsi = pf->vsi[vf->lan_vsi_idx];
 
 	if (test_bit(ICE_VF_STATE_QS_ENA, vf->vf_states))
@@ -1339,6 +1347,21 @@ bool ice_reset_vf(struct ice_vf *vf, bool is_vflr)
 	ice_vf_pre_vsi_rebuild(vf);
 	ice_vf_rebuild_vsi_with_release(vf);
 	ice_vf_post_vsi_rebuild(vf);
+
+	if (ice_dcf_get_state(pf) == ICE_DCF_STATE_BUSY) {
+		struct virtchnl_pf_event pfe = { 0 };
+
+		ice_dcf_set_state(pf, ICE_DCF_STATE_PAUSE);
+
+		pfe.event = VIRTCHNL_EVENT_DCF_VSI_MAP_UPDATE;
+		pfe.event_data.vf_vsi_map.vf_id = vf->vf_id;
+		pfe.event_data.vf_vsi_map.vsi_id = vf->lan_vsi_num;
+
+		ice_aq_send_msg_to_vf(&pf->hw, ICE_DCF_VFID,
+				      VIRTCHNL_OP_EVENT,
+				      VIRTCHNL_STATUS_SUCCESS,
+				      (u8 *)&pfe, sizeof(pfe), NULL);
+	}
 
 	return true;
 }
@@ -1976,6 +1999,24 @@ static int ice_vc_get_vf_res_msg(struct ice_vf *vf, u8 *msg)
 
 	if (vf->driver_caps & VIRTCHNL_VF_CAP_ADV_LINK_SPEED)
 		vfres->vf_cap_flags |= VIRTCHNL_VF_CAP_ADV_LINK_SPEED;
+
+	/* Negotiate DCF capability. */
+	if (vf->driver_caps & VIRTCHNL_VF_CAP_DCF) {
+		if (!ice_check_dcf_allowed(vf)) {
+			v_ret = VIRTCHNL_STATUS_ERR_PARAM;
+			goto err;
+		}
+		vfres->vf_cap_flags |= VIRTCHNL_VF_CAP_DCF;
+		pf->dcf.vf = vf;
+		ice_dcf_set_state(pf, ICE_DCF_STATE_ON);
+		dev_info(ice_pf_to_dev(pf), "Grant request for DCF functionality to VF%d\n",
+			 ICE_DCF_VFID);
+	} else if (ice_is_vf_dcf(vf) &&
+		   ice_dcf_get_state(pf) != ICE_DCF_STATE_OFF) {
+		ice_dcf_set_state(pf, ICE_DCF_STATE_OFF);
+		pf->dcf.vf = NULL;
+		ice_reset_vf(vf, false);
+	}
 
 	vfres->num_vsis = 1;
 	/* Tx and Rx queue are equal for VF */
@@ -3726,6 +3767,9 @@ static int ice_vc_dcf_cmd_desc_msg(struct ice_vf *vf, u8 *msg, u16 len)
 	struct ice_aq_desc *aq_desc = (struct ice_aq_desc *)msg;
 	struct ice_pf *pf = vf->pf;
 
+	if (!ice_is_vf_dcf(vf) || ice_dcf_get_state(pf) != ICE_DCF_STATE_ON)
+		goto err;
+
 	if (len != sizeof(*aq_desc) || !ice_dcf_aq_cmd_permitted(aq_desc)) {
 		/* In case to avoid the VIRTCHNL_OP_DCF_CMD_DESC message with
 		 * the ICE_AQ_FLAG_BUF set followed by another bad message
@@ -3763,7 +3807,8 @@ static int ice_vc_dcf_cmd_buff_msg(struct ice_vf *vf, u8 *msg, u16 len)
 {
 	struct ice_pf *pf = vf->pf;
 
-	if (!len || !pf->dcf.aq_desc_received ||
+	if (!ice_is_vf_dcf(vf) || ice_dcf_get_state(pf) != ICE_DCF_STATE_ON ||
+	    !len || !pf->dcf.aq_desc_received ||
 	    time_is_before_jiffies(pf->dcf.aq_desc_expires))
 		goto err;
 
@@ -3773,6 +3818,34 @@ static int ice_vc_dcf_cmd_buff_msg(struct ice_vf *vf, u8 *msg, u16 len)
 err:
 	return ice_vc_send_msg_to_vf(vf, VIRTCHNL_OP_DCF_CMD_BUFF,
 				     VIRTCHNL_STATUS_ERR_PARAM, NULL, 0);
+}
+
+/**
+ * ice_vc_dis_dcf_cap - disable DCF capability for the VF
+ * @vf: pointer to the VF
+ */
+static int ice_vc_dis_dcf_cap(struct ice_vf *vf)
+{
+	enum virtchnl_status_code v_ret = VIRTCHNL_STATUS_SUCCESS;
+
+	if (!test_bit(ICE_VF_STATE_ACTIVE, vf->vf_states)) {
+		v_ret = VIRTCHNL_STATUS_ERR_PARAM;
+		goto err;
+	}
+
+	if (!ice_is_vf_dcf(vf)) {
+		v_ret = VIRTCHNL_STATUS_ERR_PARAM;
+		goto err;
+	}
+
+	if (vf->driver_caps & VIRTCHNL_VF_CAP_DCF) {
+		vf->driver_caps &= ~VIRTCHNL_VF_CAP_DCF;
+		ice_dcf_set_state(vf->pf, ICE_DCF_STATE_OFF);
+		vf->pf->dcf.vf = NULL;
+	}
+err:
+	return ice_vc_send_msg_to_vf(vf, VIRTCHNL_OP_DCF_DISABLE,
+				     v_ret, NULL, 0);
 }
 
 /**
@@ -3890,6 +3963,9 @@ error_handler:
 		break;
 	case VIRTCHNL_OP_DCF_CMD_BUFF:
 		err = ice_vc_dcf_cmd_buff_msg(vf, msg, msglen);
+		break;
+	case VIRTCHNL_OP_DCF_DISABLE:
+		err = ice_vc_dis_dcf_cap(vf);
 		break;
 	case VIRTCHNL_OP_UNKNOWN:
 	default:
@@ -4066,6 +4142,13 @@ int ice_set_vf_trust(struct net_device *netdev, int vf_id, bool trusted)
 	/* Check if already trusted */
 	if (trusted == vf->trusted)
 		return 0;
+
+	if (ice_is_vf_dcf(vf) && !trusted &&
+	    ice_dcf_get_state(pf) != ICE_DCF_STATE_OFF) {
+		ice_dcf_set_state(pf, ICE_DCF_STATE_OFF);
+		pf->dcf.vf = NULL;
+		vf->driver_caps &= ~VIRTCHNL_VF_CAP_DCF;
+	}
 
 	vf->trusted = trusted;
 	ice_vc_reset_vf(vf);

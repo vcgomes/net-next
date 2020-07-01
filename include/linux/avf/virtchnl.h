@@ -139,6 +139,7 @@ enum virtchnl_ops {
 	/* opcode 34, 35, 36, 37 and 38 are reserved */
 	VIRTCHNL_OP_DCF_CMD_DESC = 39,
 	VIRTCHNL_OP_DCF_CMD_BUFF = 40,
+	VIRTCHNL_OP_DCF_DISABLE = 41,
 	/* New major set of opcodes introduced and so leaving room for
 	 * old misc opcodes to be added in future. Also these opcodes may only
 	 * be used if both the PF and VF have successfully negotiated the
@@ -278,6 +279,7 @@ VIRTCHNL_CHECK_STRUCT_LEN(16, virtchnl_vsi_resource);
 #define VIRTCHNL_VF_OFFLOAD_ENCAP_CSUM		0X00200000
 #define VIRTCHNL_VF_OFFLOAD_RX_ENCAP_CSUM	0X00400000
 #define VIRTCHNL_VF_OFFLOAD_ADQ			0X00800000
+#define VIRTCHNL_VF_CAP_DCF			0X40000000
 
 /* Define below the capability flags that are not offloads */
 #define VIRTCHNL_VF_CAP_ADV_LINK_SPEED		0x00000080
@@ -635,6 +637,7 @@ enum virtchnl_event_codes {
 	VIRTCHNL_EVENT_LINK_CHANGE,
 	VIRTCHNL_EVENT_RESET_IMPENDING,
 	VIRTCHNL_EVENT_PF_DRIVER_CLOSE,
+	VIRTCHNL_EVENT_DCF_VSI_MAP_UPDATE,
 };
 
 #define PF_EVENT_SEVERITY_INFO		0
@@ -661,6 +664,10 @@ struct virtchnl_pf_event {
 			u8 link_status;
 			u8 pad[3];
 		} link_event_adv;
+		struct {
+			u16 vf_id;
+			u16 vsi_id;
+		} vf_vsi_map;
 	} event_data;
 
 	int severity;
@@ -1271,6 +1278,8 @@ virtchnl_vc_validate_vf_msg(struct virtchnl_version_info *ver, u32 v_opcode,
 		 * so the validation needs to be done in PF's context.
 		 */
 		valid_len = msglen;
+		break;
+	case VIRTCHNL_OP_DCF_DISABLE:
 		break;
 	case VIRTCHNL_OP_GET_CAPS:
 		valid_len = sizeof(struct virtchnl_get_capabilities);
