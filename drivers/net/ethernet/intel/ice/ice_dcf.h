@@ -32,6 +32,12 @@ struct ice_dcf {
 	struct ice_aq_desc aq_desc;
 	u8 aq_desc_received;
 	unsigned long aq_desc_expires;
+
+	/* Save the current Device Serial Number when searching the package
+	 * path for later query.
+	 */
+#define ICE_DSN_NUM_LEN 8
+	u8 dsn[ICE_DSN_NUM_LEN];
 };
 
 #ifdef CONFIG_PCI_IOV

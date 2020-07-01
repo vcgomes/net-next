@@ -3907,6 +3907,55 @@ err:
 }
 
 /**
+ * ice_vc_dcf_query_pkg_info - query DDP package info from PF
+ * @vf: pointer to VF info
+ *
+ * Called from VF to query DDP package information loaded in PF,
+ * including track ID, package name, version and device serial
+ * number.
+ */
+static int ice_vc_dcf_query_pkg_info(struct ice_vf *vf)
+{
+	enum virtchnl_status_code v_ret = VIRTCHNL_STATUS_SUCCESS;
+	struct virtchnl_pkg_info *pkg_info = NULL;
+	struct ice_hw *hw = &vf->pf->hw;
+	struct ice_pf *pf = vf->pf;
+	int len = 0;
+	int ret;
+
+	if (!test_bit(ICE_VF_STATE_ACTIVE, vf->vf_states)) {
+		v_ret = VIRTCHNL_STATUS_ERR_PARAM;
+		goto err;
+	}
+
+	if (!ice_is_vf_dcf(vf) || ice_dcf_get_state(pf) != ICE_DCF_STATE_ON) {
+		v_ret = VIRTCHNL_STATUS_ERR_PARAM;
+		goto err;
+	}
+
+	len = sizeof(struct virtchnl_pkg_info);
+	pkg_info = kzalloc(len, GFP_KERNEL);
+	if (!pkg_info) {
+		v_ret = VIRTCHNL_STATUS_ERR_NO_MEMORY;
+		len = 0;
+		goto err;
+	}
+
+	pkg_info->track_id = hw->active_track_id;
+	memcpy(&pkg_info->pkg_ver, &hw->active_pkg_ver,
+	       sizeof(pkg_info->pkg_ver));
+	memcpy(pkg_info->pkg_name, hw->active_pkg_name,
+	       sizeof(pkg_info->pkg_name));
+	memcpy(pkg_info->dsn, pf->dcf.dsn, sizeof(pkg_info->dsn));
+
+err:
+	ret = ice_vc_send_msg_to_vf(vf, VIRTCHNL_OP_DCF_GET_PKG_INFO,
+				    v_ret, (u8 *)pkg_info, len);
+	kfree(pkg_info);
+	return ret;
+}
+
+/**
  * ice_vc_process_vf_msg - Process request from VF
  * @pf: pointer to the PF structure
  * @event: pointer to the AQ event
@@ -4027,6 +4076,9 @@ error_handler:
 		break;
 	case VIRTCHNL_OP_DCF_GET_VSI_MAP:
 		err = ice_vc_dcf_get_vsi_map(vf);
+		break;
+	case VIRTCHNL_OP_DCF_GET_PKG_INFO:
+		err = ice_vc_dcf_query_pkg_info(vf);
 		break;
 	case VIRTCHNL_OP_UNKNOWN:
 	default:

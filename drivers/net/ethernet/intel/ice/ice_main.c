@@ -3243,6 +3243,8 @@ static char *ice_get_opt_fw_name(struct ice_pf *pf)
 	snprintf(opt_fw_filename, NAME_MAX, "%sice-%016llx.pkg",
 		 ICE_DDP_PKG_PATH, dsn);
 
+	memcpy(pf->dcf.dsn, &dsn, sizeof(pf->dcf.dsn));
+
 	return opt_fw_filename;
 }
 
