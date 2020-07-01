@@ -3652,6 +3652,130 @@ static int ice_vf_init_vlan_stripping(struct ice_vf *vf)
 }
 
 /**
+ * ice_dcf_handle_aq_cmd - handle the AdminQ command from DCF to FW
+ * @vf: pointer to the VF info
+ * @aq_desc: the AdminQ command descriptor
+ * @aq_buf: the AdminQ command buffer if aq_buf_size is non-zero
+ * @aq_buf_size: the AdminQ command buffer size
+ *
+ * The VF splits the AdminQ command into two parts: one is the descriptor of
+ * AdminQ command, the other is the buffer of AdminQ command (the descriptor
+ * has BUF flag set). When both of them are received by PF, this function will
+ * forward them to firmware once to get the AdminQ's response. And also, the
+ * filled descriptor and buffer of the response will be sent back to VF one by
+ * one through the virtchnl.
+ */
+static int
+ice_dcf_handle_aq_cmd(struct ice_vf *vf, struct ice_aq_desc *aq_desc,
+		      u8 *aq_buf, u16 aq_buf_size)
+{
+	enum virtchnl_status_code v_ret = VIRTCHNL_STATUS_SUCCESS;
+	struct ice_pf *pf = vf->pf;
+	enum virtchnl_ops v_op;
+	enum ice_status aq_ret;
+	u16 v_msg_len = 0;
+	u8 *v_msg = NULL;
+	int ret;
+
+	pf->dcf.aq_desc_received = false;
+
+	if ((aq_buf && !aq_buf_size) || (!aq_buf && aq_buf_size))
+		return -EINVAL;
+
+	aq_ret = ice_aq_send_cmd(&pf->hw, aq_desc, aq_buf, aq_buf_size, NULL);
+	/* It needs to send back the AQ response message if ICE_ERR_AQ_ERROR
+	 * returns, some AdminQ handlers will use the error code filled by FW
+	 * to do exception handling.
+	 */
+	if (aq_ret && aq_ret != ICE_ERR_AQ_ERROR) {
+		v_ret = VIRTCHNL_STATUS_ERR_ADMIN_QUEUE_ERROR;
+		v_op = VIRTCHNL_OP_DCF_CMD_DESC;
+		goto err;
+	}
+
+	ret = ice_vc_send_msg_to_vf(vf, VIRTCHNL_OP_DCF_CMD_DESC, v_ret,
+				    (u8 *)aq_desc, sizeof(*aq_desc));
+	/* Bail out so we don't send the VIRTCHNL_OP_DCF_CMD_BUFF message
+	 * below if failure happens or no AdminQ command buffer.
+	 */
+	if (ret || !aq_buf_size)
+		return ret;
+
+	v_op = VIRTCHNL_OP_DCF_CMD_BUFF;
+	v_msg_len = le16_to_cpu(aq_desc->datalen);
+
+	/* buffer is not updated if data length exceeds buffer size */
+	if (v_msg_len > aq_buf_size)
+		v_msg_len = 0;
+	else if (v_msg_len)
+		v_msg = aq_buf;
+
+	/* send the response back to the VF */
+err:
+	return ice_vc_send_msg_to_vf(vf, v_op, v_ret, v_msg, v_msg_len);
+}
+
+/**
+ * ice_vc_dcf_cmd_desc_msg - handle the DCF AdminQ command descriptor
+ * @vf: pointer to the VF info
+ * @msg: pointer to the msg buffer which holds the command descriptor
+ * @len: length of the message
+ */
+static int ice_vc_dcf_cmd_desc_msg(struct ice_vf *vf, u8 *msg, u16 len)
+{
+	struct ice_aq_desc *aq_desc = (struct ice_aq_desc *)msg;
+	struct ice_pf *pf = vf->pf;
+
+	if (len != sizeof(*aq_desc) || !ice_dcf_aq_cmd_permitted(aq_desc)) {
+		/* In case to avoid the VIRTCHNL_OP_DCF_CMD_DESC message with
+		 * the ICE_AQ_FLAG_BUF set followed by another bad message
+		 * VIRTCHNL_OP_DCF_CMD_DESC.
+		 */
+		pf->dcf.aq_desc_received = false;
+		goto err;
+	}
+
+	/* The AdminQ descriptor needs to be stored for use when the followed
+	 * VIRTCHNL_OP_DCF_CMD_BUFF is received.
+	 */
+	if (aq_desc->flags & cpu_to_le16(ICE_AQ_FLAG_BUF)) {
+		pf->dcf.aq_desc = *aq_desc;
+		pf->dcf.aq_desc_received = true;
+		pf->dcf.aq_desc_expires = jiffies + ICE_DCF_AQ_DESC_TIMEOUT;
+		return 0;
+	}
+
+	return ice_dcf_handle_aq_cmd(vf, aq_desc, NULL, 0);
+
+	/* send the response back to the VF */
+err:
+	return ice_vc_send_msg_to_vf(vf, VIRTCHNL_OP_DCF_CMD_DESC,
+				     VIRTCHNL_STATUS_ERR_PARAM, NULL, 0);
+}
+
+/**
+ * ice_vc_dcf_cmd_buff_msg - handle the DCF AdminQ command buffer
+ * @vf: pointer to the VF info
+ * @msg: pointer to the msg buffer which holds the command buffer
+ * @len: length of the message
+ */
+static int ice_vc_dcf_cmd_buff_msg(struct ice_vf *vf, u8 *msg, u16 len)
+{
+	struct ice_pf *pf = vf->pf;
+
+	if (!len || !pf->dcf.aq_desc_received ||
+	    time_is_before_jiffies(pf->dcf.aq_desc_expires))
+		goto err;
+
+	return ice_dcf_handle_aq_cmd(vf, &pf->dcf.aq_desc, msg, len);
+
+	/* send the response back to the VF */
+err:
+	return ice_vc_send_msg_to_vf(vf, VIRTCHNL_OP_DCF_CMD_BUFF,
+				     VIRTCHNL_STATUS_ERR_PARAM, NULL, 0);
+}
+
+/**
  * ice_vc_process_vf_msg - Process request from VF
  * @pf: pointer to the PF structure
  * @event: pointer to the AQ event
@@ -3760,6 +3884,12 @@ error_handler:
 		break;
 	case VIRTCHNL_OP_DISABLE_VLAN_STRIPPING:
 		err = ice_vc_dis_vlan_stripping(vf);
+		break;
+	case VIRTCHNL_OP_DCF_CMD_DESC:
+		err = ice_vc_dcf_cmd_desc_msg(vf, msg, msglen);
+		break;
+	case VIRTCHNL_OP_DCF_CMD_BUFF:
+		err = ice_vc_dcf_cmd_buff_msg(vf, msg, msglen);
 		break;
 	case VIRTCHNL_OP_UNKNOWN:
 	default:

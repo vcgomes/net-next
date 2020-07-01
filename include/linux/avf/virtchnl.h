@@ -136,6 +136,9 @@ enum virtchnl_ops {
 	VIRTCHNL_OP_DISABLE_CHANNELS = 31,
 	VIRTCHNL_OP_ADD_CLOUD_FILTER = 32,
 	VIRTCHNL_OP_DEL_CLOUD_FILTER = 33,
+	/* opcode 34, 35, 36, 37 and 38 are reserved */
+	VIRTCHNL_OP_DCF_CMD_DESC = 39,
+	VIRTCHNL_OP_DCF_CMD_BUFF = 40,
 	/* New major set of opcodes introduced and so leaving room for
 	 * old misc opcodes to be added in future. Also these opcodes may only
 	 * be used if both the PF and VF have successfully negotiated the
@@ -1261,6 +1264,13 @@ virtchnl_vc_validate_vf_msg(struct virtchnl_version_info *ver, u32 v_opcode,
 		break;
 	case VIRTCHNL_OP_DEL_CLOUD_FILTER:
 		valid_len = sizeof(struct virtchnl_filter);
+		break;
+	case VIRTCHNL_OP_DCF_CMD_DESC:
+	case VIRTCHNL_OP_DCF_CMD_BUFF:
+		/* These two opcodes are specific to handle the AdminQ command,
+		 * so the validation needs to be done in PF's context.
+		 */
+		valid_len = msglen;
 		break;
 	case VIRTCHNL_OP_GET_CAPS:
 		valid_len = sizeof(struct virtchnl_get_capabilities);

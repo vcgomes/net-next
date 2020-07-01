@@ -435,6 +435,8 @@ struct ice_pf {
 	u32 tx_timeout_recovery_level;
 	char int_name[ICE_INT_NAME_STR_LEN];
 	u32 sw_int_count;
+
+	struct ice_dcf dcf;
 };
 
 struct ice_netdev_priv {
