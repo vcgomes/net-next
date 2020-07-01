@@ -140,6 +140,7 @@ enum virtchnl_ops {
 	VIRTCHNL_OP_DCF_CMD_DESC = 39,
 	VIRTCHNL_OP_DCF_CMD_BUFF = 40,
 	VIRTCHNL_OP_DCF_DISABLE = 41,
+	VIRTCHNL_OP_DCF_GET_VSI_MAP = 42,
 	/* New major set of opcodes introduced and so leaving room for
 	 * old misc opcodes to be added in future. Also these opcodes may only
 	 * be used if both the PF and VF have successfully negotiated the
@@ -626,6 +627,25 @@ struct virtchnl_filter {
 };
 
 VIRTCHNL_CHECK_STRUCT_LEN(272, virtchnl_filter);
+
+/* VIRTCHNL_OP_DCF_GET_VSI_MAP
+ * VF sends this message to get VSI mapping table.
+ * PF responds with an indirect message containing VF's
+ * HW VSI IDs.
+ * The index of vf_vsi array is the logical VF ID, the
+ * value of vf_vsi array is the VF's HW VSI ID with its
+ * valid configuration.
+ */
+struct virtchnl_dcf_vsi_map {
+	u16 pf_vsi;	/* PF's HW VSI ID */
+	u16 num_vfs;	/* The actual number of VFs allocated */
+#define VIRTCHNL_DCF_VF_VSI_ID_S	0
+#define VIRTCHNL_DCF_VF_VSI_ID_M	(0xFFF << VIRTCHNL_DCF_VF_VSI_ID_S)
+#define VIRTCHNL_DCF_VF_VSI_VALID	BIT(15)
+	u16 vf_vsi[1];
+};
+
+VIRTCHNL_CHECK_STRUCT_LEN(6, virtchnl_dcf_vsi_map);
 
 /* VIRTCHNL_OP_EVENT
  * PF sends this message to inform the VF driver of events that may affect it.
@@ -1280,6 +1300,7 @@ virtchnl_vc_validate_vf_msg(struct virtchnl_version_info *ver, u32 v_opcode,
 		valid_len = msglen;
 		break;
 	case VIRTCHNL_OP_DCF_DISABLE:
+	case VIRTCHNL_OP_DCF_GET_VSI_MAP:
 		break;
 	case VIRTCHNL_OP_GET_CAPS:
 		valid_len = sizeof(struct virtchnl_get_capabilities);

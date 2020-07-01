@@ -3849,6 +3849,64 @@ err:
 }
 
 /**
+ * ice_vc_dcf_get_vsi_map - get VSI mapping table
+ * @vf: pointer to the VF info
+ */
+static int ice_vc_dcf_get_vsi_map(struct ice_vf *vf)
+{
+	enum virtchnl_status_code v_ret = VIRTCHNL_STATUS_SUCCESS;
+	struct virtchnl_dcf_vsi_map *vsi_map = NULL;
+	struct ice_pf *pf = vf->pf;
+	struct ice_vsi *pf_vsi;
+	u16 len = 0;
+	int vf_id;
+	int ret;
+
+	if (!test_bit(ICE_VF_STATE_ACTIVE, vf->vf_states)) {
+		v_ret = VIRTCHNL_STATUS_ERR_PARAM;
+		goto err;
+	}
+
+	if (!ice_is_vf_dcf(vf) || ice_dcf_get_state(pf) != ICE_DCF_STATE_ON) {
+		v_ret = VIRTCHNL_STATUS_ERR_PARAM;
+		goto err;
+	}
+
+	len = struct_size(vsi_map, vf_vsi, pf->num_alloc_vfs - 1);
+	vsi_map = kzalloc(len, GFP_KERNEL);
+	if (!vsi_map) {
+		v_ret = VIRTCHNL_STATUS_ERR_NO_MEMORY;
+		len = 0;
+		goto err;
+	}
+
+	pf_vsi = ice_get_main_vsi(pf);
+	if (!pf_vsi) {
+		v_ret = VIRTCHNL_STATUS_ERR_PARAM;
+		len = 0;
+		goto err;
+	}
+
+	vsi_map->pf_vsi = pf_vsi->vsi_num;
+	vsi_map->num_vfs = pf->num_alloc_vfs;
+
+	ice_for_each_vf(pf, vf_id) {
+		struct ice_vf *tmp_vf = &pf->vf[vf_id];
+
+		if (!ice_is_vf_disabled(tmp_vf) &&
+		    test_bit(ICE_VF_STATE_INIT, tmp_vf->vf_states))
+			vsi_map->vf_vsi[vf_id] = tmp_vf->lan_vsi_num |
+				VIRTCHNL_DCF_VF_VSI_VALID;
+	}
+
+err:
+	ret = ice_vc_send_msg_to_vf(vf, VIRTCHNL_OP_DCF_GET_VSI_MAP, v_ret,
+				    (u8 *)vsi_map, len);
+	kfree(vsi_map);
+	return ret;
+}
+
+/**
  * ice_vc_process_vf_msg - Process request from VF
  * @pf: pointer to the PF structure
  * @event: pointer to the AQ event
@@ -3966,6 +4024,9 @@ error_handler:
 		break;
 	case VIRTCHNL_OP_DCF_DISABLE:
 		err = ice_vc_dis_dcf_cap(vf);
+		break;
+	case VIRTCHNL_OP_DCF_GET_VSI_MAP:
+		err = ice_vc_dcf_get_vsi_map(vf);
 		break;
 	case VIRTCHNL_OP_UNKNOWN:
 	default:
