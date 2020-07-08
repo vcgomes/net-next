@@ -437,6 +437,7 @@ struct ice_pf {
 	u32 sw_int_count;
 
 	struct ice_dcf dcf;
+	u64 supported_rxdids; /* bitmap for supported RXDID */
 };
 
 struct ice_netdev_priv {
