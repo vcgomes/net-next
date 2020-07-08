@@ -25,6 +25,9 @@
 #define ICE_IPV6_UDP_DST_PORT_OFFSET	56
 #define ICE_IPV6_SCTP_SRC_PORT_OFFSET	54
 #define ICE_IPV6_SCTP_DST_PORT_OFFSET	56
+
+#define ICE_FDIR_MAX_FLTRS		16384
+
 /* IP v4 has 2 flag bits that enable fragment processing: DF and MF. DF
  * requests that the packet not be fragmented. MF indicates that a packet has
  * been fragmented.
@@ -129,9 +132,12 @@ struct ice_fdir_fltr {
 	u16 q_index;
 	u16 dest_vsi;
 	u8 dest_ctl;
+	u8 cnt_ena;
 	u8 fltr_status;
 	u16 cnt_index;
 	u32 fltr_id;
+	u8 fdid_prio;
+	u8 comp_report;
 };
 
 /* Dummy packet filter definition structure */
