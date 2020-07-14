@@ -1536,7 +1536,6 @@ static void igc_add_rx_frag(struct igc_ring *rx_ring,
 	rx_buffer->page_offset += truesize;
 #endif
 }
-
 static struct sk_buff *igc_build_skb(struct igc_ring *rx_ring,
 				     struct igc_rx_buffer *rx_buffer,
 				     union igc_adv_rx_desc *rx_desc,
@@ -1939,7 +1938,6 @@ static int igc_clean_rx_irq(struct igc_q_vector *q_vector, const int budget)
 			skb = igc_construct_skb(rx_ring, rx_buffer,
 						rx_desc, size);
 
-		/* exit if we failed to retrieve a buffer */
 		if (!skb) {
 			rx_ring->rx_stats.alloc_failed++;
 			rx_buffer->pagecnt_bias++;
@@ -3548,6 +3546,8 @@ static int igc_sw_init(struct igc_adapter *adapter)
 	adapter->min_frame_size = ETH_ZLEN + ETH_FCS_LEN;
 
 	mutex_init(&adapter->nfc_rule_lock);
+	mutex_init(&adapter->ptm_time_lock);
+
 	INIT_LIST_HEAD(&adapter->nfc_rule_list);
 	adapter->nfc_rule_count = 0;
 
@@ -5194,6 +5194,8 @@ static int igc_probe(struct pci_dev *pdev,
 	device_set_wakeup_enable(&adapter->pdev->dev,
 				 adapter->flags & IGC_FLAG_WOL_SUPPORTED);
 
+	igc_ptp_init(adapter);
+
 	/* reset the hardware with the new settings */
 	igc_reset(adapter);
 
@@ -5209,9 +5211,6 @@ static int igc_probe(struct pci_dev *pdev,
 
 	 /* carrier off reporting is important to ethtool even BEFORE open */
 	netif_carrier_off(netdev);
-
-	/* do hw tstamp init after resetting */
-	igc_ptp_init(adapter);
 
 	/* Check if Media Autosense is enabled */
 	adapter->ei = *ei;

@@ -15,6 +15,8 @@
 #define IGC_SYSTIM_OVERFLOW_PERIOD	(HZ * 60 * 9)
 #define IGC_PTP_TX_TIMEOUT		(HZ * 15)
 
+#define IGC_PTM_CYCLE_TIME_MSECS 50
+
 /* SYSTIM read access for I225 */
 void igc_ptp_read(struct igc_adapter *adapter,
 		  struct timespec64 *ts)
@@ -411,6 +413,87 @@ static void igc_ptp_tx_work(struct work_struct *work)
 		schedule_work(&adapter->ptp_tx_work);
 }
 
+static void dump_ptm_registers(struct igc_adapter *adapter)
+{
+	struct igc_hw *hw = &adapter->hw;
+	u32 reg;
+
+	for (reg = 0x12540; reg <= 0x12594; reg += 4) {
+		trace_printk("[%#x] = %#010x\n", reg, rd32(reg));
+	}
+	trace_printk("-------\n");
+}
+
+static void igc_ptm_gather_report(struct igc_adapter *adapter)
+{
+	struct igc_hw *hw = &adapter->hw;
+	u32 t2_curr_h, t2_curr_l;
+	ktime_t t1, t2_curr;
+	s32 t3m2, t4m1;
+	int pcie_delay;
+	u32 tdelay;
+
+	t1 = ktime_set(rd32(IGC_PTM_T1_TIM0_H),
+		       rd32(IGC_PTM_T1_TIM0_L));
+
+	t2_curr_l = rd32(IGC_PTM_CURR_T2_L);
+	t2_curr_h = rd32(IGC_PTM_CURR_T2_H);
+
+	/* FIXME: When the register that tells the endianness of the
+	 * PTM registers is implemented, check it here and add the
+	 * appropriate conversion.
+	 */
+	t2_curr_h = swab32(t2_curr_h);
+
+	t2_curr = ((s64)t2_curr_h << 32 | t2_curr_l);
+
+	t4m1 = rd32(IGC_PTM_PREV_T4M1);
+	t3m2 = rd32(IGC_PTM_PREV_T3M2);
+
+	pcie_delay = (t4m1 - t3m2) / 2;
+	tdelay = rd32(IGC_PTM_TDELAY);
+
+	wr32(IGC_PTM_STAT, IGC_PTM_STAT_VALID);
+
+	mutex_lock(&adapter->ptm_time_lock);
+
+	/* Because get_device_system_crosststamp() requires that the
+	 * historic timestamp is before the PTM device/host
+	 * timestamps, we keep track of the current and previous
+	 * snapshot (historic timestamp).
+	 */
+	memcpy(&adapter->prev_snapshot,
+	&adapter->curr_snapshot, sizeof(adapter->prev_snapshot));
+	ktime_get_snapshot(&adapter->curr_snapshot);
+
+	/* dump_ptm_registers(adapter); */
+
+	adapter->ptm_device_time = t1;
+	adapter->ptm_host_time = convert_art_ns_to_tsc(t2_curr);
+	mutex_unlock(&adapter->ptm_time_lock);
+
+	mod_delayed_work(system_wq, &adapter->ptm_report,
+			 msecs_to_jiffies(IGC_PTM_CYCLE_TIME_MSECS));
+}
+
+static void igc_ptm_report_work(struct work_struct *work)
+{
+	struct igc_adapter *adapter = container_of(to_delayed_work(work),
+						   struct igc_adapter,
+						   ptm_report);
+	struct igc_hw *hw = &adapter->hw;
+	u32 stat;
+
+	stat = rd32(IGC_PTM_STAT);
+
+	if (stat & IGC_PTM_STAT_VALID) {
+		igc_ptm_gather_report(adapter);
+	} else {
+		/* reschedule to check later */
+		mod_delayed_work(system_wq, &adapter->ptm_report, 0);
+	}
+}
+
 /**
  * igc_ptp_set_ts_config - set hardware time stamping config
  * @netdev: network interface device structure
@@ -456,6 +539,75 @@ int igc_ptp_get_ts_config(struct net_device *netdev, struct ifreq *ifr)
 		-EFAULT : 0;
 }
 
+static int igc_phc_get_syncdevicetime(ktime_t *device,
+				      struct system_counterval_t *system,
+				      void *ctx)
+{
+	struct igc_adapter *adapter = ctx;
+	int err;
+
+	mutex_lock(&adapter->ptm_time_lock);
+
+	if (!adapter->ptm_device_time) {
+		err = -EINVAL;
+		goto unlock;
+	}
+
+	err = 0;
+
+	*device = adapter->ptm_device_time;
+	*system = adapter->ptm_host_time;
+
+	adapter->ptm_device_time = ktime_set(0, 0);
+
+unlock:
+	mutex_unlock(&adapter->ptm_time_lock);
+	return err;
+}
+
+static int igc_ptp_getcrosststamp(struct ptp_clock_info *ptp,
+				  struct system_device_crosststamp *cts)
+{
+	struct igc_adapter *adapter = container_of(ptp, struct igc_adapter,
+						   ptp_caps);
+
+	return get_device_system_crosststamp(igc_phc_get_syncdevicetime,
+					     adapter, &adapter->prev_snapshot, cts);
+}
+
+static bool igc_is_ptm_supported(struct igc_adapter *adapter)
+{
+	/* FIXME: This is only for testing, the
+	 * get_device_system_crosststamp() documentation says we
+	 * should check for X86_FEATURE_TSC_KNOWN_FREQ before
+	 * attempting to do the crosststamp.
+	 */
+	return true;
+
+	if (!boot_cpu_has(X86_FEATURE_TSC_KNOWN_FREQ))
+		return false;
+
+#ifdef CONFIG_PCIE_PTM
+	return adapter->pdev->ptm_enabled;
+#endif
+	return false;
+}
+
+static bool igc_ptm_init(struct igc_adapter *adapter)
+{
+	if (!igc_is_ptm_supported(adapter))
+		return false;
+
+	INIT_WORK(&adapter->ptp_tx_work, igc_ptp_tx_work);
+	INIT_DELAYED_WORK(&adapter->ptm_report, igc_ptm_report_work);
+
+	/* Get a snapshot of system clocks to use as historic value. */
+	ktime_get_snapshot(&adapter->prev_snapshot);
+	ktime_get_snapshot(&adapter->curr_snapshot);
+
+	return true;
+}
+
 /**
  * igc_ptp_init - Initialize PTP functionality
  * @adapter: Board private structure
@@ -478,6 +630,11 @@ void igc_ptp_init(struct igc_adapter *adapter)
 		adapter->ptp_caps.gettimex64 = igc_ptp_gettimex64_i225;
 		adapter->ptp_caps.settime64 = igc_ptp_settime_i225;
 		adapter->ptp_caps.enable = igc_ptp_feature_enable_i225;
+
+		if (!igc_ptm_init(adapter))
+			break;
+
+		adapter->ptp_caps.getcrosststamp = igc_ptp_getcrosststamp;
 		break;
 	default:
 		adapter->ptp_clock = NULL;
@@ -485,7 +642,6 @@ void igc_ptp_init(struct igc_adapter *adapter)
 	}
 
 	spin_lock_init(&adapter->tmreg_lock);
-	INIT_WORK(&adapter->ptp_tx_work, igc_ptp_tx_work);
 
 	adapter->tstamp_config.rx_filter = HWTSTAMP_FILTER_NONE;
 	adapter->tstamp_config.tx_type = HWTSTAMP_TX_OFF;
@@ -503,6 +659,47 @@ void igc_ptp_init(struct igc_adapter *adapter)
 	}
 }
 
+static void igc_ptm_stop(struct igc_adapter *adapter)
+{
+	struct igc_hw *hw = &adapter->hw;
+
+	wr32(IGC_PTM_CYCLE_CTRL, 0);
+	wr32(IGC_PTM_CTRL, 0);
+
+	cancel_delayed_work_sync(&adapter->ptm_report);
+}
+
+static void igc_ptm_start(struct igc_adapter *adapter)
+{
+	struct igc_hw *hw = &adapter->hw;
+	u32 cycle_ctrl, ctrl;
+
+	if (!igc_is_ptm_supported(adapter))
+		return;
+
+	wr32(IGC_PCIE_DIG_DELAY, IGC_PCIE_DIG_DELAY_DEFAULT);
+	wr32(IGC_PCIE_PHY_DELAY, IGC_PCIE_PHY_DELAY_DEFAULT);
+
+	ctrl = IGC_PTM_CTRL_EN |
+		IGC_PTM_CTRL_SHRT_CYC(20) |
+		IGC_PTM_CTRL_PTM_TO(110);
+
+	cycle_ctrl = IGC_PTM_CYCLE_CTRL_CYC_TIME(IGC_PTM_CYCLE_TIME_MSECS) |
+		IGC_PTM_CYCLE_CTRL_AUTO_CYC_EN;
+
+	wr32(IGC_PTM_CYCLE_CTRL, cycle_ctrl);
+	wr32(IGC_PTM_CTRL, ctrl);
+
+	/* The cycle only starts "for real" when software notifies
+	 * that it has read the registers, this is done by setting
+	 * VALID bit.
+	 */
+	wr32(IGC_PTM_STAT, IGC_PTM_STAT_VALID);
+
+	schedule_delayed_work(&adapter->ptm_report,
+			      msecs_to_jiffies(IGC_PTM_CYCLE_TIME_MSECS));
+}
+
 /**
  * igc_ptp_suspend - Disable PTP work items and prepare for suspend
  * @adapter: Board private structure
@@ -514,6 +711,8 @@ void igc_ptp_suspend(struct igc_adapter *adapter)
 {
 	if (!(adapter->ptp_flags & IGC_PTP_ENABLED))
 		return;
+
+	igc_ptm_stop(adapter);
 
 	cancel_work_sync(&adapter->ptp_tx_work);
 	dev_kfree_skb_any(adapter->ptp_tx_skb);
@@ -548,6 +747,10 @@ void igc_ptp_reset(struct igc_adapter *adapter)
 {
 	struct igc_hw *hw = &adapter->hw;
 	unsigned long flags;
+	u32 timadj;
+
+	if (!(adapter->ptp_flags & IGC_PTP_ENABLED))
+		return;
 
 	/* reset the tstamp_config */
 	igc_ptp_set_timestamp_mode(adapter, &adapter->tstamp_config);
@@ -556,10 +759,17 @@ void igc_ptp_reset(struct igc_adapter *adapter)
 
 	switch (adapter->hw.mac.type) {
 	case igc_i225:
+		timadj = rd32(IGC_TIMADJ);
+		timadj |= IGC_TIMADJ_ADJUST_METH;
+		wr32(IGC_TIMADJ, timadj);
+
 		wr32(IGC_TSAUXC, 0x0);
 		wr32(IGC_TSSDP, 0x0);
 		wr32(IGC_TSIM, IGC_TSICR_INTERRUPTS);
 		wr32(IGC_IMS, IGC_IMS_TS);
+
+		igc_ptm_start(adapter);
+
 		break;
 	default:
 		/* No work to do. */
