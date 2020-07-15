@@ -453,6 +453,8 @@ static void igc_ptm_gather_report(struct igc_adapter *adapter)
 	pcie_delay = (t4m1 - t3m2) / 2;
 	tdelay = rd32(IGC_PTM_TDELAY);
 
+	dump_ptm_registers(adapter);
+
 	wr32(IGC_PTM_STAT, IGC_PTM_STAT_VALID);
 
 	mutex_lock(&adapter->ptm_time_lock);
@@ -465,8 +467,6 @@ static void igc_ptm_gather_report(struct igc_adapter *adapter)
 	memcpy(&adapter->prev_snapshot,
 	&adapter->curr_snapshot, sizeof(adapter->prev_snapshot));
 	ktime_get_snapshot(&adapter->curr_snapshot);
-
-	/* dump_ptm_registers(adapter); */
 
 	adapter->ptm_device_time = t1;
 	adapter->ptm_host_time = convert_art_ns_to_tsc(t2_curr);
