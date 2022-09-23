@@ -5238,8 +5238,13 @@ static void igc_tsync_interrupt(struct igc_adapter *adapter)
 	}
 
 	if (tsicr & IGC_TSICR_TXTS) {
+		long delay;
 		/* retrieve hardware timestamp */
-		schedule_work(&adapter->ptp_tx_work);
+		delay = igc_ptp_tx_work(&adapter->ptp_caps);
+		if (delay >= 0) {
+			/* The timestamp is not ready, schedule to check later */
+			ptp_schedule_worker(adapter->ptp_clock, delay);
+		}
 		ack |= IGC_TSICR_TXTS;
 	}
 

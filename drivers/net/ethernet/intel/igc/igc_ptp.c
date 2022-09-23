@@ -734,24 +734,37 @@ static void igc_ptp_tx_hwtstamp(struct igc_adapter *adapter, u32 mask)
  * igc_ptp_tx_work
  * @work: pointer to work struct
  *
- * This work function polls the TSYNCTXCTL valid bit to determine when a
- * timestamp has been taken for the current stored skb.
+ * This work function polls the TSYNCTXCTL valid bit to determine when
+ * a timestamp has been taken for the current stored skb. Return a
+ * delay in case there's no timestamp ready.
  */
-static void igc_ptp_tx_work(struct work_struct *work)
+long igc_ptp_tx_work(struct ptp_clock_info *ptp)
 {
-	struct igc_adapter *adapter = container_of(work, struct igc_adapter,
-						   ptp_tx_work);
+	struct igc_adapter *adapter = container_of(ptp, struct igc_adapter,
+						   ptp_caps);
 	struct igc_hw *hw = &adapter->hw;
 	unsigned long flags;
 	u32 tsynctxctl;
+	long delay = -1;
 
 	spin_lock_irqsave(&adapter->ptp_tx_lock, flags);
 
 	tsynctxctl = rd32(IGC_TSYNCTXCTL);
+	tsynctxctl &= IGC_TSYNCTXCTL_TXTT_ANY;
+	if (!tsynctxctl) {
+		/* We got the interrupt but the timestamp is not ready
+		 * still, schedule to check later.
+		 */
+		delay = usecs_to_jiffies(1);
+		goto unlock;
+	}
 
-	igc_ptp_tx_hwtstamp(adapter, tsynctxctl & IGC_TSYNCTXCTL_TXTT_ANY);
+	igc_ptp_tx_hwtstamp(adapter, tsynctxctl);
 
+unlock:
 	spin_unlock_irqrestore(&adapter->ptp_tx_lock, flags);
+
+	return delay;
 }
 
 /**
@@ -1014,6 +1027,7 @@ void igc_ptp_init(struct igc_adapter *adapter)
 		adapter->ptp_caps.n_per_out = IGC_N_PEROUT;
 		adapter->ptp_caps.n_pins = IGC_N_SDP;
 		adapter->ptp_caps.verify = igc_ptp_verify_pin;
+		adapter->ptp_caps.do_aux_work = igc_ptp_tx_work;
 
 		if (!igc_is_crosststamp_supported(adapter))
 			break;
@@ -1027,7 +1041,6 @@ void igc_ptp_init(struct igc_adapter *adapter)
 
 	spin_lock_init(&adapter->tmreg_lock);
 	spin_lock_init(&adapter->ptp_tx_lock);
-	INIT_WORK(&adapter->ptp_tx_work, igc_ptp_tx_work);
 
 	adapter->tstamp_config.rx_filter = HWTSTAMP_FILTER_NONE;
 	adapter->tstamp_config.tx_type = HWTSTAMP_TX_OFF;
@@ -1089,7 +1102,7 @@ void igc_ptp_suspend(struct igc_adapter *adapter)
 	if (!(adapter->ptp_flags & IGC_PTP_ENABLED))
 		return;
 
-	cancel_work_sync(&adapter->ptp_tx_work);
+	ptp_cancel_worker_sync(adapter->ptp_clock);
 
 	spin_lock_irqsave(&adapter->ptp_tx_lock, flags);
 
