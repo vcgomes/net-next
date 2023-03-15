@@ -650,6 +650,9 @@ void igc_ptp_tx_hang(struct igc_adapter *adapter)
 	if (adapter->tstamp_config.tx_type != HWTSTAMP_TX_ON)
 		return;
 
+	trace_printk("dev %s reschedules %d\n",
+		     adapter->netdev->name, adapter->tstamp_reschedules);
+
 	spin_lock_irqsave(&adapter->ptp_tx_lock, flags);
 
 	for (i = 0; i < IGC_MAX_TX_TSTAMP_REGS; i++) {
@@ -756,6 +759,7 @@ long igc_ptp_tx_work(struct ptp_clock_info *ptp)
 		 * still, schedule to check later.
 		 */
 		delay = usecs_to_jiffies(1);
+		adapter->tstamp_reschedules++;
 		goto unlock;
 	}
 
