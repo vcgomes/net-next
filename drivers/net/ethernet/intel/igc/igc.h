@@ -71,6 +71,7 @@ struct igc_rx_packet_stats {
 
 struct igc_tx_timestamp_request {
 	struct sk_buff *skb;   /* reference to the packet being timestamped */
+	int count;
 	unsigned long start;   /* when the tstamp request started (jiffies) */
 	u32 mask;              /* _TSYNCTXCTL_TXTT_{X} bit for this request */
 	u32 regl;              /* which TXSTMPL_{X} register should be used */

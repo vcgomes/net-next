@@ -653,6 +653,12 @@ void igc_ptp_tx_hang(struct igc_adapter *adapter)
 	trace_printk("dev %s reschedules %d\n",
 		     adapter->netdev->name, adapter->tstamp_reschedules);
 
+	trace_printk("counts 0: %d 1: %d 2: %d 3: %d\n",
+		     adapter->tx_tstamp[0].count,
+		     adapter->tx_tstamp[1].count,
+		     adapter->tx_tstamp[2].count,
+		     adapter->tx_tstamp[3].count);
+
 	spin_lock_irqsave(&adapter->ptp_tx_lock, flags);
 
 	for (i = 0; i < IGC_MAX_TX_TSTAMP_REGS; i++) {
@@ -727,6 +733,7 @@ static void igc_ptp_tx_hwtstamp(struct igc_adapter *adapter, u32 mask)
 			ktime_add_ns(shhwtstamps.hwtstamp, adjust);
 
 		tstamp->skb = NULL;
+		tstamp->count++;
 
 		skb_tstamp_tx(skb, &shhwtstamps);
 		dev_kfree_skb_any(skb);
