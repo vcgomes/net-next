@@ -79,7 +79,6 @@ struct sched_gate_list {
 	struct rcu_head rcu;
 	struct list_head entries;
 	size_t num_entries;
-	ktime_t cycle_end_time;
 	s64 cycle_time;
 	s64 cycle_time_extension;
 	s64 base_time;
@@ -868,18 +867,6 @@ done:
 	return skb;
 }
 
-static bool should_restart_cycle(const struct sched_gate_list *oper,
-				 const struct sched_entry *entry)
-{
-	if (list_is_last(&entry->list, &oper->entries))
-		return true;
-
-	if (ktime_compare(entry->end_time, oper->cycle_end_time) == 0)
-		return true;
-
-	return false;
-}
-
 static bool should_change_schedules(const struct sched_gate_list *admin,
 				    const struct sched_gate_list *oper,
 				    ktime_t end_time)
@@ -914,6 +901,40 @@ static bool should_change_schedules(const struct sched_gate_list *admin,
 	return false;
 }
 
+static struct sched_entry *get_next_entry(struct sched_gate_list *oper,
+					  ktime_t now)
+{
+	struct sched_entry *next;
+	s32 rem, cur;
+
+	/* If the schedule hasn't started, according to the current
+	 * time, nothing to do.
+	 */
+	if (ktime_compare(now, oper->base_time) < 0)
+		return NULL;
+
+	next = list_first_entry(&oper->entries, struct sched_entry, list);
+	cur = next->interval;
+
+	/* FIXME: what to do about larger than ~4s (2^32ns)
+	 * cycle-times?
+	 */
+	div_s64_rem(now - oper->base_time, oper->cycle_time, &rem);
+
+	while (cur <= rem) {
+		next = list_next_entry(next, list);
+		cur += next->interval;
+	}
+
+	/* Update the end_time of this entry, it is the start of the
+	 * cycle (now - rem), plus the sum of the intervals of all
+	 * entries (including this).
+	 */
+	next->end_time = ktime_add_ns(ktime_sub_ns(now, rem), cur);
+
+	return next;
+}
+
 static enum hrtimer_restart advance_sched(struct hrtimer *timer)
 {
 	struct taprio_sched *q = container_of(timer, struct taprio_sched,
@@ -923,7 +944,7 @@ static enum hrtimer_restart advance_sched(struct hrtimer *timer)
 	int num_tc = netdev_get_num_tc(dev);
 	struct sched_entry *entry, *next;
 	struct Qdisc *sch = q->root;
-	ktime_t end_time;
+	ktime_t now, end_time;
 	int tc;
 
 	spin_lock(&q->current_entry_lock);
@@ -934,7 +955,12 @@ static enum hrtimer_restart advance_sched(struct hrtimer *timer)
 	admin = rcu_dereference_protected(q->admin_sched,
 					  lockdep_is_held(&q->current_entry_lock));
 
-	if (!oper)
+	now = taprio_get_time(q);
+
+	/* If it's the first time we run, or based on the current
+	 * time it's already time for the admin schedule.
+	 */
+	if (!oper || should_change_schedules(admin, oper, now))
 		switch_schedules(q, &admin, &oper);
 
 	/* This can happen in two cases: 1. this is the very first run
@@ -950,17 +976,18 @@ static enum hrtimer_restart advance_sched(struct hrtimer *timer)
 		goto first_run;
 	}
 
-	if (should_restart_cycle(oper, entry)) {
-		next = list_first_entry(&oper->entries, struct sched_entry,
-					list);
-		oper->cycle_end_time = ktime_add_ns(oper->cycle_end_time,
-						    oper->cycle_time);
-	} else {
-		next = list_next_entry(entry, list);
+	next = get_next_entry(oper, now);
+	if (!next) {
+		/* Means that the clock changed, and we got to a time
+		 * before the start of the schedule, next being NULL
+		 * will cause all queues to be open, re-try again at
+		 * oper->base_time.
+		 */
+		end_time = oper->base_time;
+		goto first_run;
 	}
 
-	end_time = ktime_add_ns(entry->end_time, next->interval);
-	end_time = min_t(ktime_t, end_time, oper->cycle_end_time);
+	end_time = next->end_time;
 
 	for (tc = 0; tc < num_tc; tc++) {
 		if (next->gate_duration[tc] == oper->cycle_time)
@@ -978,7 +1005,6 @@ static enum hrtimer_restart advance_sched(struct hrtimer *timer)
 		switch_schedules(q, &admin, &oper);
 	}
 
-	next->end_time = end_time;
 	taprio_set_budgets(q, oper, next);
 
 first_run:
@@ -1249,9 +1275,6 @@ static void setup_first_end_time(struct taprio_sched *q,
 				 struct sched_entry, list);
 
 	cycle = sched->cycle_time;
-
-	/* FIXME: find a better place to do this */
-	sched->cycle_end_time = ktime_add_ns(base, cycle);
 
 	first->end_time = ktime_add_ns(base, first->interval);
 	taprio_set_budgets(q, sched, first);
